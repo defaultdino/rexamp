@@ -81,7 +81,10 @@ pub fn draw_maximized_player(f: &mut Frame, s: &AppState, area: Rect) {
             .flex(Flex::Center)
             .areas(info);
 
-    f.render_widget(Paragraph::new(lyrics(s)), lyrics_area);
+    f.render_widget(
+        Paragraph::new(lyrics(s, lyrics_area.height as usize)),
+        lyrics_area,
+    );
     f.render_widget(Paragraph::new(info_lines(s, info.width as usize)), info);
 
     let queue = &s.playback.queue;
@@ -180,23 +183,24 @@ fn info_lines(s: &AppState, width: usize) -> Vec<Line<'static>> {
     ]
 }
 
-fn lyrics(s: &AppState) -> Vec<Line<'static>> {
+fn lyrics<'a>(s: &'a AppState, line_count: usize) -> Vec<Line<'a>> {
     match &s.playback.lyrics.lyrics {
         Remote::Idle => vec![Line::styled("No lyrics found", Modifier::DIM)],
         Remote::Loading => vec![Line::styled("Loading lyrics…", Modifier::DIM)],
         Remote::Failed => vec![Line::styled("Couldn't load lyrics", Modifier::DIM)],
         Remote::Loaded(lyrics) => match lyrics.timed {
-            true => timed_lyrics(s, lyrics),
+            true => timed_lyrics(s, lyrics, line_count),
             false => lyrics
                 .lines
                 .iter()
-                .map(|l| Line::raw(l.text.clone()))
+                .take(line_count)
+                .map(|l| Line::raw(l.text.as_str()))
                 .collect(),
         },
     }
 }
 
-fn timed_lyrics(s: &AppState, lyrics: &TrackLyrics) -> Vec<Line<'static>> {
+fn timed_lyrics<'a>(s: &AppState, lyrics: &'a TrackLyrics, line_count: usize) -> Vec<Line<'a>> {
     let current_offset = s.playback.now.position_ms as usize;
     let active = lyrics
         .lines
@@ -208,13 +212,14 @@ fn timed_lyrics(s: &AppState, lyrics: &TrackLyrics) -> Vec<Line<'static>> {
         .iter()
         .enumerate()
         .skip(top)
+        .take(line_count)
         .map(|(i, l)| {
             if Some(i) == active {
-                Line::styled(l.text.clone(), s.accent)
+                Line::styled(l.text.as_str(), s.accent)
             } else if Some(i) < active {
-                Line::styled(l.text.clone(), Modifier::DIM)
+                Line::styled(l.text.as_str(), Modifier::DIM)
             } else {
-                Line::raw(l.text.clone())
+                Line::raw(l.text.as_str())
             }
         })
         .collect()
