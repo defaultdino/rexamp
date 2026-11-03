@@ -2,6 +2,7 @@ pub mod browser;
 #[cfg(feature = "cast")]
 pub mod cast;
 pub mod keys;
+pub mod load_state;
 pub mod lyrics;
 pub mod now_playing;
 mod playback;

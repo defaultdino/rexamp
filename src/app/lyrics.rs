@@ -1,19 +1,13 @@
 use std::cmp::Reverse;
 
+use super::load_state::LoadState;
 use crate::plex::models::{AvailableLyrics, TrackLyrics};
-
-pub enum Remote<T> {
-    Idle,
-    Loading,
-    Loaded(T),
-    Failed,
-}
 
 pub struct Lyrics {
     pub track_key: Option<String>,
     pub lyric_id: Option<String>,
-    pub available: Remote<Vec<AvailableLyrics>>,
-    pub lyrics: Remote<TrackLyrics>,
+    pub available: LoadState<Vec<AvailableLyrics>>,
+    pub lyrics: LoadState<TrackLyrics>,
 }
 
 impl Default for Lyrics {
@@ -21,8 +15,8 @@ impl Default for Lyrics {
         Self {
             track_key: None,
             lyric_id: None,
-            available: Remote::Idle,
-            lyrics: Remote::Idle,
+            available: LoadState::Idle,
+            lyrics: LoadState::Idle,
         }
     }
 }
@@ -30,12 +24,12 @@ impl Default for Lyrics {
 impl Lyrics {
     pub fn set_loading_available(&mut self, track_key: &str) {
         self.track_key = Some(track_key.into());
-        self.available = Remote::Loading;
+        self.available = LoadState::Loading;
     }
 
     pub fn set_loading_lyrics(&mut self, lyric_id: &str) {
         self.lyric_id = Some(lyric_id.into());
-        self.lyrics = Remote::Loading;
+        self.lyrics = LoadState::Loading;
     }
 
     pub fn set_available(&mut self, track_key: &str, available: Vec<AvailableLyrics>) {
@@ -43,8 +37,8 @@ impl Lyrics {
             return;
         }
 
-        self.available = Remote::Loaded(available);
-        self.lyrics = Remote::Idle;
+        self.available = LoadState::Loaded(available);
+        self.lyrics = LoadState::Idle;
     }
 
     pub fn set_available_failed(&mut self, track_key: &str) {
@@ -52,8 +46,8 @@ impl Lyrics {
             return;
         }
 
-        self.available = Remote::Failed;
-        self.lyrics = Remote::Failed;
+        self.available = LoadState::Failed;
+        self.lyrics = LoadState::Failed;
     }
 
     pub fn set_lyrics(&mut self, lyric_id: &str, lyrics: TrackLyrics) {
@@ -61,7 +55,7 @@ impl Lyrics {
             return;
         }
 
-        self.lyrics = Remote::Loaded(lyrics);
+        self.lyrics = LoadState::Loaded(lyrics);
     }
 
     pub fn set_lyrics_failed(&mut self, lyric_id: &str) {
@@ -69,19 +63,19 @@ impl Lyrics {
             return;
         }
 
-        self.lyrics = Remote::Failed;
+        self.lyrics = LoadState::Failed;
     }
 
     pub fn is_available_for(&self, track_key: &str) -> bool {
-        self.track_key == Some(track_key.into()) && matches!(self.available, Remote::Loaded(_))
+        self.track_key == Some(track_key.into()) && matches!(self.available, LoadState::Loaded(_))
     }
 
     pub fn is_loaded_for(&self, lyrics_id: &str) -> bool {
-        self.lyric_id == Some(lyrics_id.into()) && matches!(self.lyrics, Remote::Loaded(_))
+        self.lyric_id == Some(lyrics_id.into()) && matches!(self.lyrics, LoadState::Loaded(_))
     }
 
     pub fn best_available(&self) -> Vec<&AvailableLyrics> {
-        let Remote::Loaded(als) = &self.available else {
+        let LoadState::Loaded(als) = &self.available else {
             return Vec::new();
         };
 

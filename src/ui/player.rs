@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::browser::ListKind;
-use crate::app::lyrics::Remote;
+use crate::app::load_state::LoadState;
 use crate::app::now_playing::NowPlaying;
 use crate::app::queue::Repeat;
 use crate::app::state::AppState;
@@ -185,10 +185,10 @@ fn info_lines(s: &AppState, width: usize) -> Vec<Line<'static>> {
 
 fn lyrics<'a>(s: &'a AppState, line_count: usize) -> Vec<Line<'a>> {
     match &s.playback.lyrics.lyrics {
-        Remote::Idle => vec![Line::styled("No lyrics found", Modifier::DIM)],
-        Remote::Loading => vec![Line::styled("Loading lyrics…", Modifier::DIM)],
-        Remote::Failed => vec![Line::styled("Couldn't load lyrics", Modifier::DIM)],
-        Remote::Loaded(lyrics) => match lyrics.timed {
+        LoadState::Idle => vec![Line::styled("No lyrics found", Modifier::DIM)],
+        LoadState::Loading => vec![Line::styled("Loading lyrics…", Modifier::DIM)],
+        LoadState::Failed => vec![Line::styled("Couldn't load lyrics", Modifier::DIM)],
+        LoadState::Loaded(lyrics) => match lyrics.timed {
             true => timed_lyrics(s, lyrics, line_count),
             false => lyrics
                 .lines
