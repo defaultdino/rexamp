@@ -46,6 +46,7 @@ pub struct Playback {
     pub media_controls_dirty: bool,
     /// status line message, moved to the app's message after each event
     pub(super) notice: Option<Message>,
+    pub lyrics_offset: usize,
 }
 
 impl Playback {
@@ -73,6 +74,7 @@ impl Playback {
             media_controls_dirty: false,
             notice: None,
             lyrics: Lyrics::default(),
+            lyrics_offset: 0,
         };
 
         if let Some(saved) = saved {

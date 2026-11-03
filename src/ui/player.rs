@@ -198,6 +198,7 @@ fn lyrics<'a>(s: &'a AppState, line_count: usize) -> Vec<Line<'a>> {
             false => lyrics
                 .lines
                 .iter()
+                .skip(s.playback.lyrics_offset)
                 .take(line_count)
                 .map(|l| Line::raw(l.text.as_str()))
                 .collect(),

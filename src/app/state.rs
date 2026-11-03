@@ -265,7 +265,10 @@ impl AppState {
                 let len = self.list_len();
                 self.browser.move_selection(delta, len);
             }
-            Screen::Player => {}
+            Screen::Player => {
+                self.playback.lyrics_offset =
+                    self.playback.lyrics_offset.saturating_add_signed(delta);
+            }
         }
     }
 
