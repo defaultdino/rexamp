@@ -26,7 +26,7 @@ fn player_title(action: &str, accent: Color) -> Vec<Span<'static>> {
 }
 
 const INFO_LINES: u16 = 4;
-const LYRICS_GRACE_OFFSET: usize = 2;
+const LYRICS_OFFSET: usize = 1;
 
 pub fn draw_minimized_player(f: &mut Frame, s: &AppState, area: Rect) {
     let block = Block::bordered().title(player_title("maximize", s.accent));
@@ -55,8 +55,9 @@ pub fn draw_maximized_player(f: &mut Frame, s: &AppState, area: Rect) {
         (rows >= 4).then_some((cols, rows))
     };
 
-    let [header, list] = Layout::vertical([
+    let [header, lyrics_area, list] = Layout::vertical([
         Constraint::Length(cover.map_or(INFO_LINES, |(_, rows)| rows.max(INFO_LINES))),
+        Constraint::Min(6),
         Constraint::Fill(1),
     ])
     .spacing(1)
@@ -75,11 +76,10 @@ pub fn draw_maximized_player(f: &mut Frame, s: &AppState, area: Rect) {
         }
         None => header,
     };
-    let [lyrics_area, info] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(INFO_LINES)])
-            .spacing(1)
-            .flex(Flex::Center)
-            .areas(info);
+    let [info] = Layout::vertical([Constraint::Length(INFO_LINES)])
+        .spacing(1)
+        .flex(Flex::Center)
+        .areas(info);
 
     f.render_widget(
         Paragraph::new(lyrics(s, lyrics_area.height as usize)),
@@ -95,7 +95,7 @@ pub fn draw_maximized_player(f: &mut Frame, s: &AppState, area: Rect) {
         return;
     }
 
-    let mut lines = vec![Line::styled("up next", Modifier::DIM)];
+    let mut lines = vec![section_title("up next")];
 
     lines.extend(
         queue.entries[next..]
@@ -183,8 +183,13 @@ fn info_lines(s: &AppState, width: usize) -> Vec<Line<'static>> {
     ]
 }
 
+fn section_title<'a>(s: &'a str) -> Line<'a> {
+    let style = Style::new().add_modifier(Modifier::DIM);
+    Line::styled(s, style)
+}
+
 fn lyrics<'a>(s: &'a AppState, line_count: usize) -> Vec<Line<'a>> {
-    match &s.playback.lyrics.lyrics {
+    let lyrics = match &s.playback.lyrics.lyrics {
         LoadState::Idle => vec![Line::styled("No lyrics found", Modifier::DIM)],
         LoadState::Loading => vec![Line::styled("Loading lyrics…", Modifier::DIM)],
         LoadState::Failed => vec![Line::styled("Couldn't load lyrics", Modifier::DIM)],
@@ -197,7 +202,12 @@ fn lyrics<'a>(s: &'a AppState, line_count: usize) -> Vec<Line<'a>> {
                 .map(|l| Line::raw(l.text.as_str()))
                 .collect(),
         },
-    }
+    };
+
+    let mut lyrics_lines = vec![section_title("lyrics")];
+    lyrics_lines.extend(lyrics);
+
+    lyrics_lines
 }
 
 fn timed_lyrics<'a>(s: &AppState, lyrics: &'a TrackLyrics, line_count: usize) -> Vec<Line<'a>> {
@@ -206,7 +216,7 @@ fn timed_lyrics<'a>(s: &AppState, lyrics: &'a TrackLyrics, line_count: usize) ->
         .lines
         .iter()
         .rposition(|l| l.offset <= current_offset);
-    let top = active.unwrap_or(0).saturating_sub(LYRICS_GRACE_OFFSET);
+    let top = active.unwrap_or(0).saturating_sub(LYRICS_OFFSET);
     lyrics
         .lines
         .iter()
@@ -216,8 +226,6 @@ fn timed_lyrics<'a>(s: &AppState, lyrics: &'a TrackLyrics, line_count: usize) ->
         .map(|(i, l)| {
             if Some(i) == active {
                 Line::styled(l.text.as_str(), s.accent)
-            } else if Some(i) < active {
-                Line::styled(l.text.as_str(), Modifier::DIM)
             } else {
                 Line::raw(l.text.as_str())
             }
