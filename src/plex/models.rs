@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 const LYRIC_STREAM_TYPE: u32 = 4;
 
@@ -256,24 +257,22 @@ impl From<RawItem> for Track {
 
 impl From<RawItem> for TrackMetadata {
     fn from(r: RawItem) -> Self {
+        let part = r
+            .media
+            .into_iter()
+            .next()
+            .and_then(|m| m.parts.into_iter().next());
+        let streams = part.map(|p| p.streams).unwrap_or_default();
+        if streams.is_empty() {
+            warn!("track {}: no streams in metadata response", r.rating_key);
+        }
         Self {
-            lyrics: r
-                .media
+            lyrics: streams
                 .into_iter()
-                .next()
-                .unwrap_or_default()
-                .parts
-                .into_iter()
-                .next()
-                .iter()
-                .flat_map(|p| {
-                    p.streams
-                        .iter()
-                        .filter(|s| s.stream_type == LYRIC_STREAM_TYPE)
-                        .map(|s| AvailableLyrics {
-                            id: s.id.to_string(),
-                            format: s.format.clone().unwrap_or_default(),
-                        })
+                .filter(|s| s.stream_type == LYRIC_STREAM_TYPE)
+                .map(|s| AvailableLyrics {
+                    id: s.id.to_string(),
+                    format: s.format.unwrap_or_default(),
                 })
                 .collect(),
         }
