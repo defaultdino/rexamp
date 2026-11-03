@@ -14,9 +14,9 @@ mod tui;
 #[derive(Parser, Debug)]
 enum Subcommand {
     /// Sign in to Plex and choose a server and music library
-    Login(self::login::Options),
+    Login,
     /// Remove saved tokens
-    Logout(self::logout::Options),
+    Logout,
     /// Switch media libraries
     Switch(self::switch::Options),
 }
@@ -34,10 +34,10 @@ impl Options {
     pub fn run(self, cfg: Config, saved: &mut SavedState) -> anyhow::Result<ExitCode> {
         use Subcommand as S;
         match self.subcommand {
-            Some(S::Login(c)) => c.run(saved),
-            Some(S::Logout(c)) => c.run(saved),
+            Some(S::Login) => self::login::run(saved),
+            Some(S::Logout) => self::logout::run(saved),
             Some(S::Switch(c)) => c.run(saved),
-            None => self::tui::Options::default().run(
+            None => self::tui::run(
                 saved,
                 cfg.accent_color.as_deref(),
                 #[cfg(feature = "cast")]
@@ -48,13 +48,13 @@ impl Options {
 }
 
 // sets up a file logger in the app directory
-// as rex.log with daily log rotations
+// as rexamp.log with daily log rotations
 pub fn setup_logging(level: Level) -> anyhow::Result<()> {
     let dir = config::state_dir()?;
     std::fs::create_dir_all(&dir)?;
     let appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
-        .filename_prefix("rex")
+        .filename_prefix("rexamp")
         .filename_suffix("log")
         .max_log_files(3)
         .build(dir)?;

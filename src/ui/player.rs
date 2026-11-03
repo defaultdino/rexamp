@@ -14,7 +14,7 @@ use crate::app::now_playing::NowPlaying;
 use crate::app::queue::Repeat;
 use crate::app::state::AppState;
 use crate::plex::models::{Track, TrackLyrics};
-use crate::ui::string_formatting::{fit, truncate};
+use crate::ui::string_formatting::{fit, fmt_ms, truncate};
 use crate::ui::track_row;
 
 fn player_title(action: &str, accent: Color) -> Vec<Span<'static>> {
@@ -236,10 +236,10 @@ fn timed_lyrics<'a>(s: &AppState, lyrics: &'a TrackLyrics, line_count: usize) ->
 
 fn progress_line(now: &NowPlaying, track: &Track, width: usize, accent: Color) -> Line<'static> {
     let icon = if now.paused { "‖" } else { "▶" };
-    let left = format!("{icon} {} ", crate::fmt_ms(now.position_ms));
+    let left = format!("{icon} {} ", fmt_ms(now.position_ms));
     let right = track
         .duration_ms
-        .map_or(String::new(), |d| format!(" {}", crate::fmt_ms(d)));
+        .map_or(String::new(), |d| format!(" {}", fmt_ms(d)));
     let bar_width = width.saturating_sub(left.width() + right.width());
     let filled = match track.duration_ms {
         Some(d) if d > 0 => {
@@ -279,11 +279,5 @@ fn status_line(s: &AppState) -> Line<'static> {
         (true, Some(d)) => format!(" · device vol {:.0}%", d.level * 100.0),
     };
     spans.push(Span::raw(vol));
-    if s.debug_line {
-        spans.push(Span::raw(format!(
-            " · rss {:.1} MB",
-            crate::rss_kb() as f64 / 1024.0
-        )));
-    }
     Line::from(spans)
 }

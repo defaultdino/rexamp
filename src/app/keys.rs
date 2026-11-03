@@ -33,7 +33,6 @@ pub enum Action {
     MoveUp,
     Clear,
     Help,
-    DebugLine,
     Quit,
     TogglePlayer,
     SearchSubmit,
@@ -141,7 +140,6 @@ impl Action {
             Action::MoveUp => "queue: move up",
             Action::Clear => "queue: clear",
             Action::Help => "help",
-            Action::DebugLine => "memory usage",
             Action::Quit => "quit",
             Action::Play => "play now (replace queue)",
             Action::PlayShuffle => "play shuffled (replace queue)",
@@ -162,7 +160,6 @@ pub struct KeyBinding {
 pub struct Binding {
     pub keys: &'static [KeyBinding],
     pub action: Action,
-    pub show_in_help: bool,
     pub show_in_help_bar: bool,
 }
 
@@ -170,13 +167,11 @@ const fn bind(action: Action, keys: &'static [KeyBinding]) -> Binding {
     Binding {
         keys,
         action,
-        show_in_help: true,
         show_in_help_bar: false,
     }
 }
 
-const fn help_bar_only(mut binding: Binding) -> Binding {
-    binding.show_in_help = false;
+const fn in_help_bar(mut binding: Binding) -> Binding {
     binding.show_in_help_bar = true;
     binding
 }
@@ -228,7 +223,7 @@ pub const BINDINGS: &[Binding] = &[
     bind(Action::Jump(Section::Playlists), &[key('3')]),
     bind(Action::Jump(Section::Search), &[key('4')]),
     bind(Action::Jump(Section::Queue), &[key('5')]),
-    help_bar_only(bind(Action::Search, &[key('/')])),
+    in_help_bar(bind(Action::Search, &[key('/')])),
     bind(Action::PlayPause, &[key(' ')]),
     bind(Action::Next, &[key('>')]),
     bind(Action::Previous, &[key('<')]),
@@ -238,19 +233,18 @@ pub const BINDINGS: &[Binding] = &[
     bind(Action::VolumeDown, &[key('-')]),
     bind(Action::Shuffle, &[key('s')]),
     bind(Action::Repeat, &[key('r')]),
-    help_bar_only(bind(Action::Append, &[key('a')])),
-    help_bar_only(bind(Action::PlayNext, &[key('n')])),
-    help_bar_only(bind(Action::Remove, &[key('d')])),
-    help_bar_only(bind(Action::MoveDown, &[key('J')])),
-    help_bar_only(bind(Action::MoveUp, &[key('K')])),
-    help_bar_only(bind(Action::Clear, &[key('D')])),
-    help_bar_only(bind(Action::Help, &[key('?')])),
-    bind(Action::DebugLine, &[code(KeyCode::F(12))]),
+    in_help_bar(bind(Action::Append, &[key('a')])),
+    in_help_bar(bind(Action::PlayNext, &[key('n')])),
+    in_help_bar(bind(Action::Remove, &[key('d')])),
+    in_help_bar(bind(Action::MoveDown, &[key('J')])),
+    in_help_bar(bind(Action::MoveUp, &[key('K')])),
+    in_help_bar(bind(Action::Clear, &[key('D')])),
+    in_help_bar(bind(Action::Help, &[key('?')])),
     bind(Action::Quit, &[key('q')]),
-    help_bar_only(bind(Action::Play, &[key('P')])),
-    help_bar_only(bind(Action::PlayShuffle, &[key('S')])),
-    help_bar_only(bind(Action::SearchSubmit, &[code(KeyCode::Enter)])),
-    help_bar_only(bind(Action::SearchCancel, &[code(KeyCode::Esc)])),
+    in_help_bar(bind(Action::Play, &[key('P')])),
+    in_help_bar(bind(Action::PlayShuffle, &[key('S')])),
+    in_help_bar(bind(Action::SearchSubmit, &[code(KeyCode::Enter)])),
+    in_help_bar(bind(Action::SearchCancel, &[code(KeyCode::Esc)])),
     bind(Action::TogglePlayer, &[key('m')]),
     #[cfg(feature = "cast")]
     bind(Action::Cast, &[key('c')]),

@@ -15,17 +15,22 @@ use super::decoder::Decoder;
 use super::output::Output;
 use super::resample::Resampler;
 use super::source::CachedHttpSource;
-use crate::backend::{Channels, PlayerCmd, PlayerEvent};
+use crate::backend::{Events, PlayerCmd, PlayerEvent};
 use crate::plex::PlexClient;
 use crate::plex::models::Track;
 
 const POSITION_EVERY: Duration = Duration::from_millis(250);
 const IDLE_POLL: Duration = Duration::from_millis(20);
 const FILL_BUDGET: Duration = Duration::from_millis(50);
+const DECODE_AHEAD_PACKETS: usize = 32;
 
-pub fn spawn(client: Arc<PlexClient>, cache_dir: PathBuf, volume: f32) -> Result<Channels> {
+pub fn spawn(
+    client: Arc<PlexClient>,
+    cache_dir: PathBuf,
+    volume: f32,
+    events: Events,
+) -> Result<SyncSender<PlayerCmd>> {
     let (cmd_tx, cmd_rx) = sync_channel(32);
-    let (ev_tx, ev_rx) = sync_channel(256);
     let (ready_tx, ready_rx) = channel();
     let _ = std::fs::remove_dir_all(&cache_dir);
     thread::Builder::new()
@@ -39,17 +44,14 @@ pub fn spawn(client: Arc<PlexClient>, cache_dir: PathBuf, volume: f32) -> Result
                 }
             };
             let _ = ready_tx.send(Ok(()));
-            let (opened_tx, opened_rx) = channel();
             Player {
                 out,
                 client,
                 cache_dir,
-                events: ev_tx,
-                opened_tx,
-                opened_rx,
+                events,
                 decoding: None,
                 next: None,
-                next_pending: None,
+                starved: false,
                 resampler: None,
                 pcm: Vec::new(),
                 ready: Vec::new(),
@@ -65,12 +67,107 @@ pub fn spawn(client: Arc<PlexClient>, cache_dir: PathBuf, volume: f32) -> Result
             .run(cmd_rx);
         })?;
     ready_rx.recv().context("player thread died")??;
-    Ok((cmd_tx, ev_rx))
+    Ok(cmd_tx)
 }
 
-struct Loaded {
+enum Chunk {
+    Pcm(u32, Vec<f32>),
+    Seeked {
+        generation: u64,
+        reached_ms: Result<u64, String>,
+    },
+    End,
+    Failed(String),
+}
+
+struct DecodeThread {
     track: Arc<Track>,
-    dec: Decoder,
+    chunks: Receiver<Chunk>,
+    seeks: Sender<(u64, u64)>,
+    start_queued: bool,
+    seek_gen: u64,
+    awaiting_seek: bool,
+}
+
+impl DecodeThread {
+    fn spawn(
+        client: Arc<PlexClient>,
+        cache_dir: PathBuf,
+        track: Arc<Track>,
+        events: Events,
+    ) -> Self {
+        let (chunk_tx, chunks) = sync_channel(DECODE_AHEAD_PACKETS);
+        let (seeks, seek_rx) = channel();
+        let t = track.clone();
+        let spawned = thread::Builder::new()
+            .name("decode".into())
+            .spawn(move || decode(&client, &cache_dir, t, &events, &seek_rx, &chunk_tx));
+        if let Err(e) = spawned {
+            warn!("spawning decode: {e}");
+        }
+        Self {
+            track,
+            chunks,
+            seeks,
+            start_queued: false,
+            seek_gen: 0,
+            awaiting_seek: false,
+        }
+    }
+}
+
+fn decode(
+    client: &Arc<PlexClient>,
+    cache_dir: &std::path::Path,
+    track: Arc<Track>,
+    events: &Events,
+    seeks: &Receiver<(u64, u64)>,
+    out: &SyncSender<Chunk>,
+) {
+    let mut dec = match open(client, cache_dir, &track, events) {
+        Ok(d) => d,
+        Err(e) => {
+            let _ = out.send(Chunk::Failed(format!("{}: {e:#}", track.title)));
+            return;
+        }
+    };
+    // after `End` we stay alive for seeks until the player drops the track
+    let mut ended = false;
+    loop {
+        let mut seek = seeks.try_iter().last();
+
+        if ended && seek.is_none() {
+            let Ok(s) = seeks.recv() else { return };
+            seek = Some(seeks.try_iter().last().unwrap_or(s));
+        }
+
+        if let Some((generation, ms)) = seek {
+            let reached_ms = dec.seek(ms).map_err(|e| format!("seek: {e:#}"));
+            if out
+                .send(Chunk::Seeked {
+                    generation,
+                    reached_ms,
+                })
+                .is_err()
+            {
+                return;
+            }
+        }
+        let mut pcm = Vec::new();
+        let chunk = match dec.next(&mut pcm) {
+            Ok(true) => Chunk::Pcm(dec.rate(), pcm),
+            Ok(false) => Chunk::End,
+            Err(e) => {
+                warn!("decode error in {}: {e:#}", track.title);
+                Chunk::Failed(format!("{}: {e:#}", track.title))
+            }
+        };
+        let failed = matches!(chunk, Chunk::Failed(_));
+        ended = matches!(chunk, Chunk::End);
+        if out.send(chunk).is_err() || failed {
+            return;
+        }
+    }
 }
 
 struct Playing {
@@ -83,12 +180,10 @@ struct Player {
     out: Output,
     client: Arc<PlexClient>,
     cache_dir: PathBuf,
-    events: SyncSender<PlayerEvent>,
-    opened_tx: Sender<(String, Result<Loaded>)>,
-    opened_rx: Receiver<(String, Result<Loaded>)>,
-    decoding: Option<Loaded>,
-    next: Option<Loaded>,
-    next_pending: Option<String>,
+    events: Events,
+    decoding: Option<DecodeThread>,
+    next: Option<DecodeThread>,
+    starved: bool,
     resampler: Option<Resampler>,
     pcm: Vec<f32>,
     ready: Vec<f32>,
@@ -108,11 +203,16 @@ struct Player {
 impl Player {
     fn run(mut self, cmds: Receiver<PlayerCmd>) {
         loop {
-            let cmd = if self.wants_data() {
+            let cmd = if self.wants_data() && !self.starved {
                 cmds.try_recv()
                     .map_err(|e| matches!(e, TryRecvError::Disconnected))
             } else if self.active() && !self.paused {
-                cmds.recv_timeout(IDLE_POLL)
+                let wait = if self.starved {
+                    IDLE_POLL
+                } else {
+                    self.idle_wait()
+                };
+                cmds.recv_timeout(wait)
                     .map_err(|e| matches!(e, RecvTimeoutError::Disconnected))
             } else {
                 cmds.recv().map_err(|_| true)
@@ -124,9 +224,6 @@ impl Player {
             }
             if self.out.failed() && !self.paused {
                 self.recover_device();
-            }
-            while let Ok((rk, res)) = self.opened_rx.try_recv() {
-                self.on_opened(rk, res);
             }
             self.fill();
             self.track_output();
@@ -196,11 +293,13 @@ impl Player {
             && self.out.free() >= self.out.capacity() / 4
     }
 
+    fn idle_wait(&self) -> Duration {
+        let frames = (self.out.capacity() / 4).saturating_sub(self.out.free()) / 2;
+        Duration::from_millis(frames as u64 * 1000 / self.out.rate as u64).max(IDLE_POLL)
+    }
+
     fn active(&self) -> bool {
-        self.playing.is_some()
-            || self.decoding.is_some()
-            || !self.starts.is_empty()
-            || self.next_pending.is_some()
+        self.playing.is_some() || self.decoding.is_some() || !self.starts.is_empty()
     }
 
     fn handle(&mut self, cmd: PlayerCmd) {
@@ -220,17 +319,13 @@ impl Player {
             PlayerCmd::Stop => {
                 self.reset_pipeline();
                 self.next = None;
-                self.next_pending = None;
                 self.out.suspend();
             }
             PlayerCmd::SetVolume(v) => {
                 self.volume = v;
                 self.out.set_volume(v);
             }
-            PlayerCmd::ClearNext => {
-                self.next = None;
-                self.next_pending = None;
-            }
+            PlayerCmd::ClearNext => self.next = None,
         }
     }
 
@@ -246,67 +341,41 @@ impl Player {
         self.written = self.out.played();
     }
 
+    fn spawn_decoding(&self, track: Arc<Track>) -> DecodeThread {
+        DecodeThread::spawn(
+            self.client.clone(),
+            self.cache_dir.clone(),
+            track,
+            self.events.clone(),
+        )
+    }
+
     fn load(&mut self, track: Arc<Track>) {
         self.reset_pipeline();
-        let loaded = match self.next.take() {
-            Some(n) if n.track.rating_key == track.rating_key => Ok(n),
-            _ => open(&self.client, &self.cache_dir, track.clone(), &self.events),
-        };
-        self.next_pending = None;
-        match loaded {
-            Ok(l) => {
-                self.out.resume();
-                self.starts.push_back((self.written, l.track.clone()));
-                self.decoding = Some(l);
-                self.paused = false;
-                self.out.set_paused(false);
-            }
-            Err(e) => self.error(&track.rating_key, format!("{}: {e:#}", track.title)),
-        }
+        let next = self
+            .next
+            .take()
+            .filter(|n| n.track.rating_key == track.rating_key);
+        self.decoding = Some(next.unwrap_or_else(|| self.spawn_decoding(track)));
+        self.out.resume();
+        self.paused = false;
+        self.out.set_paused(false);
     }
 
     fn enqueue_next(&mut self, track: Arc<Track>) {
-        let rk = track.rating_key.clone();
-        if self.next_pending.as_ref() == Some(&rk)
-            || self.next.as_ref().is_some_and(|n| n.track.rating_key == rk)
+        if self
+            .next
+            .as_ref()
+            .is_some_and(|n| n.track.rating_key == track.rating_key)
         {
             return;
         }
-        self.next = None;
-        self.next_pending = Some(rk.clone());
-        let (client, dir, tx, ev) = (
-            self.client.clone(),
-            self.cache_dir.clone(),
-            self.opened_tx.clone(),
-            self.events.clone(),
-        );
-        let spawned = thread::Builder::new()
-            .name("open-next".into())
-            .spawn(move || {
-                let _ = tx.send((rk, open(&client, &dir, track, &ev)));
-            });
-        if let Err(e) = spawned {
-            warn!("spawning open-next: {e}");
-            self.next_pending = None;
-        }
-    }
-
-    fn on_opened(&mut self, rk: String, res: Result<Loaded>) {
-        if self.next_pending.as_ref() != Some(&rk) {
-            return;
-        }
-        self.next_pending = None;
-        match res {
-            Ok(l) => {
-                self.next = Some(l);
-                // decoding already ran out (or playback fully ended): chain it in right away
-                if self.decoding.is_none() {
-                    self.end_at = None;
-                    self.out.resume();
-                    self.advance();
-                }
-            }
-            Err(e) => self.error(&rk, format!("{e:#}")),
+        self.next = Some(self.spawn_decoding(track));
+        // decoding already ran out (or playback fully ended): chain it in right away
+        if self.decoding.is_none() {
+            self.end_at = None;
+            self.out.resume();
+            self.advance();
         }
     }
 
@@ -319,14 +388,12 @@ impl Player {
             debug!("seek ignored: decoder already moved past the playing track");
             return;
         }
-        let reached = match cur.dec.seek(ms) {
-            Ok(r) => r,
-            Err(e) => {
-                let rk = cur.track.rating_key.clone();
-                self.error(&rk, format!("seek: {e:#}"));
-                return;
-            }
-        };
+        cur.seek_gen += 1;
+        if cur.seeks.send((cur.seek_gen, ms)).is_err() {
+            debug!("seek ignored: the track already finished decoding");
+            return;
+        }
+        cur.awaiting_seek = true;
         if let Some(r) = self.resampler.as_mut() {
             r.reset();
         }
@@ -337,14 +404,36 @@ impl Player {
         self.written = self.out.played();
         if let Some(p) = self.playing.as_mut() {
             p.start = self.written;
-            p.offset_ms = reached;
+            p.offset_ms = ms;
         }
         self.last_position = Instant::now()
             .checked_sub(POSITION_EVERY)
             .unwrap_or_else(Instant::now);
     }
 
+    fn on_seeked(&mut self, generation: u64, reached_ms: Result<u64, String>) {
+        let Some(cur) = self.decoding.as_mut() else {
+            return;
+        };
+        if generation != cur.seek_gen {
+            return;
+        }
+        cur.awaiting_seek = false;
+        match reached_ms {
+            Ok(ms) => {
+                if let Some(p) = self.playing.as_mut() {
+                    p.offset_ms = ms;
+                }
+            }
+            Err(e) => {
+                let rk = cur.track.rating_key.clone();
+                self.error(&rk, e);
+            }
+        }
+    }
+
     fn fill(&mut self) {
+        self.starved = false;
         if self.paused {
             return;
         }
@@ -366,27 +455,52 @@ impl Player {
             let Some(cur) = self.decoding.as_mut() else {
                 return;
             };
-            self.pcm.clear();
-            match cur.dec.next(&mut self.pcm) {
-                Ok(true) => {
-                    let (rate, rk) = (cur.dec.rate(), cur.track.rating_key.clone());
+            let chunk = match cur.chunks.try_recv() {
+                Ok(c) => c,
+                Err(TryRecvError::Empty) => {
+                    self.starved = true;
+                    return;
+                }
+                Err(TryRecvError::Disconnected) => Chunk::Failed("decoder thread exited".into()),
+            };
+            let (track, awaiting_seek) = (cur.track.clone(), cur.awaiting_seek);
+            match chunk {
+                Chunk::Pcm(..) | Chunk::End if awaiting_seek => {}
+                Chunk::Pcm(rate, pcm) => {
+                    if !cur.start_queued {
+                        cur.start_queued = true;
+                        self.queue_start(track.clone(), rate);
+                    }
+                    self.pcm = pcm;
                     if let Err(e) = self.resample(rate) {
-                        self.error(&rk, format!("resampling: {e:#}"));
+                        self.error(&track.rating_key, format!("resampling: {e:#}"));
                         self.advance();
                     }
                 }
-                Ok(false) => self.advance(),
-                Err(e) => {
-                    warn!("decode error in {}: {e:#}", cur.track.title);
-                    let (rk, msg) = (
-                        cur.track.rating_key.clone(),
-                        format!("{}: {e:#}", cur.track.title),
-                    );
-                    self.error(&rk, msg);
+                Chunk::Seeked {
+                    generation,
+                    reached_ms,
+                } => self.on_seeked(generation, reached_ms),
+                Chunk::End => self.advance(),
+                Chunk::Failed(msg) => {
+                    self.error(&track.rating_key, msg);
                     self.advance();
                 }
             }
         }
+    }
+
+    fn queue_start(&mut self, track: Arc<Track>, rate: u32) {
+        if self
+            .resampler
+            .as_ref()
+            .is_some_and(|r| r.input_rate() != rate)
+        {
+            self.flush_resampler();
+        }
+        let owed = self.resampler.as_ref().map_or(0, Resampler::owed);
+        let at = self.written + self.queued_frames() + owed;
+        self.starts.push_back((at, track));
     }
 
     fn resample(&mut self, rate: u32) -> Result<()> {
@@ -415,25 +529,10 @@ impl Player {
     /// chains the pre-opened next track or marks the end
     /// if the decoding track is exhausted
     fn advance(&mut self) {
-        self.decoding = None;
-        match self.next.take() {
-            Some(n) => {
-                let keeps_rate = self
-                    .resampler
-                    .as_ref()
-                    .is_some_and(|r| r.input_rate() == n.dec.rate());
-                if !keeps_rate {
-                    self.flush_resampler();
-                }
-                let owed = self.resampler.as_ref().map_or(0, Resampler::owed);
-                let at = self.written + self.queued_frames() + owed;
-                self.starts.push_back((at, n.track.clone()));
-                self.decoding = Some(n);
-            }
-            None => {
-                self.flush_resampler();
-                self.end_at = Some(self.written + self.queued_frames());
-            }
+        self.decoding = self.next.take();
+        if self.decoding.is_none() {
+            self.flush_resampler();
+            self.end_at = Some(self.written + self.queued_frames());
         }
     }
 
@@ -463,9 +562,7 @@ impl Player {
             if self.playing.take().is_some() {
                 self.emit(PlayerEvent::TrackEnded);
             }
-            if self.next_pending.is_none() {
-                self.out.suspend();
-            }
+            self.out.suspend();
         }
         if let Some(p) = &self.playing
             && !self.paused
@@ -482,24 +579,19 @@ impl Player {
 fn open(
     client: &Arc<PlexClient>,
     cache_dir: &std::path::Path,
-    track: Arc<Track>,
-    events: &SyncSender<PlayerEvent>,
-) -> Result<Loaded> {
+    track: &Track,
+    events: &Events,
+) -> Result<Decoder> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     if track.part_key.is_empty() {
         anyhow::bail!("{} has no playable media", track.title);
     }
-    let path = cache_dir.join(format!(
-        "{}-{}",
-        track.rating_key,
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
+    let path = cache_dir.join(SEQ.fetch_add(1, Ordering::Relaxed).to_string());
     let ev = events.clone();
     let on_buffering = Arc::new(move |b: bool| {
         let _ = ev.try_send(PlayerEvent::BufferingChanged(b));
     });
     let source = CachedHttpSource::open(client, &track.part_key, path, on_buffering)?;
-    let dec = Decoder::open(Box::new(source), track.container.as_deref())
-        .with_context(|| format!("{} ({:?})", track.title, track.audio_codec))?;
-    Ok(Loaded { track, dec })
+    Decoder::open(Box::new(source), track.container.as_deref())
+        .with_context(|| format!("{} ({:?})", track.title, track.audio_codec))
 }

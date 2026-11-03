@@ -5,14 +5,13 @@ mod messages;
 mod status;
 
 use std::sync::Arc;
-use std::sync::mpsc::SyncSender;
 use std::time::Instant;
 
 use cast_sender::Payload;
 use cast_sender::namespace::media::Media;
 use tracing::debug;
 
-use crate::backend::{DeviceVolume, PlayerEvent};
+use crate::backend::{DeviceVolume, Events, PlayerEvent};
 use crate::plex::PlexClient;
 use crate::plex::models::Track;
 
@@ -65,7 +64,8 @@ impl Position {
 
 pub struct Caster {
     plex: Arc<PlexClient>,
-    events: SyncSender<PlayerEvent>,
+    token: String,
+    events: Events,
     pub outbox: Vec<(String, Payload, Option<u32>)>,
     pub conn: Conn,
     last_req: u32,
@@ -86,9 +86,10 @@ pub struct Caster {
 }
 
 impl Caster {
-    pub fn new(plex: Arc<PlexClient>, events: SyncSender<PlayerEvent>) -> Self {
+    pub fn new(plex: Arc<PlexClient>, token: String, events: Events) -> Self {
         Self {
             plex,
+            token,
             events,
             outbox: Vec::new(),
             conn: Conn::Down,

@@ -32,19 +32,22 @@ impl PlexClient {
         start: u32,
         size: u32,
     ) -> Result<Page<T>> {
-        let c: Container<MetadataList> = self.get_range(path, query, start, size)?;
+        let c: Container<MetadataList> = self.get_json(path, query, Some((start, size)), true)?;
         let items: Vec<T> = c.mc.items.into_iter().map(T::from).collect();
         let total = c.mc.total_size.unwrap_or(start + items.len() as u32);
         Ok(Page { items, total })
     }
 
-    pub fn sections(&self) -> Result<Vec<Section>> {
-        let c: Container<Directories<Section>> = self.get("/library/sections", &[])?;
-        Ok(c.mc.items)
+    #[cfg(feature = "cast")]
+    pub fn transient_token(&self) -> Result<String> {
+        let query = [("type", "delegation"), ("scope", "all")];
+        let c: Container<super::models::TransientToken> = self.get("/security/token", &query)?;
+        Ok(c.mc.token)
     }
 
     pub fn music_sections(&self) -> Result<Vec<Section>> {
-        let mut s = self.sections()?;
+        let c: Container<Directories<Section>> = self.get("/library/sections", &[])?;
+        let mut s = c.mc.items;
         s.retain(|s| s.kind == "artist");
         Ok(s)
     }

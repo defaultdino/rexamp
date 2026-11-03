@@ -5,12 +5,12 @@ pub mod keys;
 pub mod load_state;
 pub mod lyrics;
 pub mod now_playing;
-mod playback;
+pub mod playback;
 pub mod queue;
 mod reporting;
 pub mod state;
 
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -21,7 +21,7 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use tracing::warn;
 
 use crate::audio::player;
-use crate::backend::PlayerEvent;
+use crate::backend::{Events, PlayerEvent};
 #[cfg(feature = "cast")]
 use crate::cast::Device;
 use crate::config::{self, SavedState};
@@ -68,7 +68,6 @@ pub enum ApiRequest {
         view: u64,
         query: String,
     },
-    Report(Vec<Report>),
     Cover {
         thumb: String,
     },
@@ -135,14 +134,21 @@ pub fn run(
         .clone()
         .context("no music section selected")?;
 
-    let (tx, rx) = sync_channel(64);
+    let (tx, rx) = sync_channel(256);
     let (api_tx, api_rx) = sync_channel(16);
 
     let cache = config::dirs()?.cache_dir().join("stream");
-    let (player_tx, player_rx) = player::spawn(client.clone(), cache, saved.volume)?;
+    let player_tx = player::spawn(
+        client.clone(),
+        cache,
+        saved.volume,
+        Events::new(tx.clone(), 0),
+    )?;
 
     spawn_api_workers(client.clone(), section, saved, api_rx, tx.clone())?;
-    spawn_forwarder(player_rx, tx.clone(), 0)?;
+
+    let (report_tx, report_rx) = channel();
+    let reports_done = spawn_reporter(client.clone(), report_rx)?;
 
     #[cfg(unix)]
     spawn_signals(tx.clone())?;
@@ -154,6 +160,7 @@ pub fn run(
 
     let mut app = AppState::new(
         api_tx,
+        report_tx,
         player_tx,
         saved.volume,
         saved.queue.take(),
@@ -164,7 +171,7 @@ pub fn run(
     );
     app.set_accent(accent);
 
-    spawn_tui(rx, app, media_controls, &client, saved)
+    spawn_tui(rx, app, media_controls, reports_done, saved)
 }
 
 /// runs the ui on a scoped thread while the main thread runs the platform run loop
@@ -172,7 +179,7 @@ fn spawn_tui(
     rx: Receiver<AppEvent>,
     mut state: AppState,
     mut media_controls: Option<MediaControls>,
-    client: &PlexClient,
+    reports_done: Receiver<()>,
     saved: &mut SavedState,
 ) -> Result<()> {
     thread::scope(|s| {
@@ -181,16 +188,15 @@ fn spawn_tui(
             .spawn_scoped(s, move || {
                 // ratatui::init installs a panic hook that restores the terminal
                 let mut terminal = ratatui::init();
-                let result = event_loop(
-                    &mut terminal,
-                    &mut state,
-                    &rx,
-                    media_controls.as_mut(),
-                    client,
-                );
+                let result = event_loop(&mut terminal, &mut state, &rx, media_controls.as_mut());
                 ratatui::restore();
 
-                shutdown(&mut state, client, saved)?;
+                let closed = shutdown(&mut state, saved);
+
+                drop(state);
+                let _ = reports_done.recv_timeout(REPORT_TIMEOUT);
+                closed?;
+
                 result
             })?;
         run_main_loop(&tui);
@@ -199,13 +205,12 @@ fn spawn_tui(
 }
 
 /// stops playback, sends the final playback reports and saves what the session changed
-fn shutdown(state: &mut AppState, client: &PlexClient, saved: &mut SavedState) -> Result<()> {
+fn shutdown(state: &mut AppState, saved: &mut SavedState) -> Result<()> {
     state.playback.stop_player();
     #[cfg(feature = "cast")]
     let cast = state.close_cast();
-    for r in state.playback.reporter.stopped() {
-        send_report(client, &r);
-    }
+    let stopped = state.playback.reporter.stopped();
+    state.playback.report(stopped);
     let result = save_session(state, saved);
     #[cfg(feature = "cast")]
     cast::wait_closed(cast);
@@ -236,7 +241,6 @@ fn event_loop(
     state: &mut AppState,
     rx: &Receiver<AppEvent>,
     mut media_controls: Option<&mut MediaControls>,
-    client: &PlexClient,
 ) -> Result<()> {
     loop {
         terminal.draw(|f| crate::ui::draw(f, state))?;
@@ -257,7 +261,7 @@ fn event_loop(
         if playback.media_controls_dirty {
             playback.media_controls_dirty = false;
             if let Some(m) = media_controls.as_deref_mut() {
-                m.update(&playback.now, client);
+                m.update(&playback.now, playback.cover.as_ref());
             }
         }
         if state.quit {
@@ -359,19 +363,17 @@ fn send_report(c: &PlexClient, r: &Report) {
     }
 }
 
-fn spawn_forwarder(rx: Receiver<PlayerEvent>, tx: SyncSender<AppEvent>, id: u64) -> Result<()> {
+fn spawn_reporter(client: Arc<PlexClient>, rx: Receiver<Vec<Report>>) -> Result<Receiver<()>> {
+    let (done_tx, done_rx) = channel::<()>();
     thread::Builder::new()
-        .name("player-events".into())
-        .spawn(move || forward(rx, tx, id))?;
-    Ok(())
-}
-
-fn forward(rx: Receiver<PlayerEvent>, tx: SyncSender<AppEvent>, id: u64) {
-    for ev in rx {
-        if tx.send(AppEvent::Player(id, ev)).is_err() {
-            break;
-        }
-    }
+        .name("reporter".into())
+        .spawn(move || {
+            let _done = done_tx;
+            for r in rx.iter().flatten() {
+                send_report(&client, &r);
+            }
+        })?;
+    Ok(done_rx)
 }
 
 fn spawn_input(tx: SyncSender<AppEvent>) -> Result<()> {
@@ -458,10 +460,6 @@ impl ApiContext {
                 mode,
                 result: self.call(|| fetch_tracks(c, &source)).map_err(err),
             },
-            ApiRequest::Report(reports) => {
-                reports.iter().for_each(|r| send_report(c, r));
-                return None;
-            }
             ApiRequest::Cover { thumb } => AppEvent::Cover {
                 result: self.call(|| fetch_cover(c, &thumb)).map_err(err),
                 thumb,
