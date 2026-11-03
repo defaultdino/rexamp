@@ -66,7 +66,7 @@ pub fn draw_maximized_player(f: &mut Frame, s: &AppState, area: Rect) {
         Some((cols, _)) => {
             let [art_area, info] =
                 Layout::horizontal([Constraint::Length(cols), Constraint::Fill(1)])
-                    .spacing(1)
+                    .spacing(2)
                     .areas(header);
             if let Some(art) = get_cover_art(s, track) {
                 f.render_widget(CoverArt(art), art_area);
