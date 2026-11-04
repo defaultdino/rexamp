@@ -13,6 +13,7 @@ use super::queue::SavedQueue;
 use super::reporting::Report;
 use super::{AddMode, ApiRequest, TrackSource};
 use crate::app::keys::MAXIMIZED_PLAYER_KEYS;
+use crate::app::load_state::LoadState;
 use crate::backend::PlayerCmd;
 #[cfg(feature = "cast")]
 use crate::cast::Device;
@@ -264,10 +265,22 @@ impl AppState {
                 let len = self.list_len();
                 self.browser.move_selection(delta, len);
             }
-            Screen::Player => {
-                self.playback.lyrics_offset =
-                    self.playback.lyrics_offset.saturating_add_signed(delta);
-            }
+            Screen::Player => match &self.playback.lyrics.lyrics {
+                LoadState::Idle => return,
+                LoadState::Failed => return,
+                LoadState::Loading => return,
+                LoadState::Loaded(l) => {
+                    if l.timed {
+                        return;
+                    } else {
+                        self.playback.lyrics_offset = self
+                            .playback
+                            .lyrics_offset
+                            .saturating_add_signed(delta)
+                            .min(l.lines.len() - 1);
+                    }
+                }
+            },
         }
     }
 
