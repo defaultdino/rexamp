@@ -352,6 +352,7 @@ impl Playback {
                 self.now.position_ms = 0;
                 self.now.buffering = false;
                 self.failures = 0;
+                self.lyrics_offset = 0;
                 if let Some(ms) = self.seek_on_start.take() {
                     self.seek_to(ms);
                 }
