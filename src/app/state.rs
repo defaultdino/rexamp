@@ -12,6 +12,7 @@ use super::playback::Playback;
 use super::queue::SavedQueue;
 use super::reporting::Report;
 use super::{AddMode, ApiRequest, TrackSource};
+use crate::app::keys::MAXIMIZED_PLAYER_KEYS;
 use crate::backend::PlayerCmd;
 #[cfg(feature = "cast")]
 use crate::cast::Device;
@@ -157,7 +158,7 @@ impl AppState {
             (Some(Modal::Help), _) => &[HELP_KEYS],
             #[cfg(feature = "cast")]
             (Some(Modal::Cast(_)), _) => &[keys::CAST_KEYS],
-            (None, Screen::Player) => &[GLOBAL_PLAYER_KEYS],
+            (None, Screen::Player) => &[MAXIMIZED_PLAYER_KEYS, GLOBAL_PLAYER_KEYS],
             (None, Screen::Browse(Focus::Sidebar)) => &[NAV_KEYS, GLOBAL_PLAYER_KEYS],
             (None, Screen::Browse(Focus::List)) => match self.browser.view().map(|v| &v.kind) {
                 Some(ListKind::Queue) => &[QUEUE_KEYS, NAV_KEYS, GLOBAL_PLAYER_KEYS],
