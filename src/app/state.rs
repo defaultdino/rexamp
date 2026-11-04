@@ -266,13 +266,11 @@ impl AppState {
                 self.browser.move_selection(delta, len);
             }
             Screen::Player => match &self.playback.lyrics.lyrics {
-                LoadState::Idle => return,
-                LoadState::Failed => return,
-                LoadState::Loading => return,
+                LoadState::Idle => (),
+                LoadState::Failed => (),
+                LoadState::Loading => (),
                 LoadState::Loaded(l) => {
-                    if l.timed {
-                        return;
-                    } else {
+                    if !l.timed {
                         self.playback.lyrics_offset = self
                             .playback
                             .lyrics_offset
