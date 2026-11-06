@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
+
+const LYRIC_STREAM_TYPE: u32 = 4;
 
 #[derive(Deserialize)]
 pub struct Container<T> {
@@ -79,6 +82,29 @@ pub struct Playlist {
     pub duration_ms: Option<u64>,
 }
 
+#[derive(Debug)]
+pub struct AvailableLyrics {
+    pub id: String,
+    pub format: String,
+}
+
+#[derive(Debug)]
+pub struct TrackMetadata {
+    pub lyrics: Vec<AvailableLyrics>,
+}
+
+#[derive(Debug)]
+pub struct TrackLyrics {
+    pub timed: bool,
+    pub lines: Vec<LyricLine>,
+}
+
+#[derive(Debug)]
+pub struct LyricLine {
+    pub start_ms: usize,
+    pub text: String,
+}
+
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub(super) struct RawItem {
@@ -112,6 +138,17 @@ struct RawMedia {
 #[serde(default)]
 struct RawPart {
     key: String,
+    #[serde(rename = "Stream")]
+    streams: Vec<RawStream>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct RawStream {
+    id: u32,
+    stream_type: u32,
+    format: Option<String>,
+    timed: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -121,6 +158,61 @@ pub(super) struct MetadataList {
     pub items: Vec<RawItem>,
     #[serde(default)]
     pub total_size: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RawLyricsContainer {
+    #[serde(rename = "Lyrics")]
+    pub lyrics: Vec<RawLyrics>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RawLyrics {
+    timed: bool,
+    #[serde(rename = "Line")]
+    lines: Vec<RawLine>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct RawLine {
+    start_offset: Option<usize>,
+    #[serde(rename = "Span")]
+    span: Vec<Option<RawSpan>>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct RawSpan {
+    text: String,
+}
+
+fn to_lyric_line(l: &RawLine, is_timed: bool) -> Option<LyricLine> {
+    let offset = if is_timed {
+        l.start_offset?
+    } else {
+        l.start_offset.unwrap_or(0)
+    };
+    let span = l.span.iter().flatten().next()?;
+    Some(LyricLine {
+        start_ms: offset,
+        text: span.text.clone(),
+    })
+}
+
+impl From<RawLyrics> for TrackLyrics {
+    fn from(r: RawLyrics) -> Self {
+        Self {
+            timed: r.timed,
+            lines: r
+                .lines
+                .iter()
+                .filter_map(|l| to_lyric_line(l, r.timed))
+                .collect(),
+        }
+    }
 }
 
 impl From<RawItem> for Artist {
@@ -170,6 +262,30 @@ impl From<RawItem> for Track {
                 .unwrap_or_default(),
             container: media.container,
             audio_codec: media.audio_codec,
+        }
+    }
+}
+
+impl From<RawItem> for TrackMetadata {
+    fn from(r: RawItem) -> Self {
+        let part = r
+            .media
+            .into_iter()
+            .next()
+            .and_then(|m| m.parts.into_iter().next());
+        let streams = part.map(|p| p.streams).unwrap_or_default();
+        if streams.is_empty() {
+            warn!("track {}: no streams in metadata response", r.rating_key);
+        }
+        Self {
+            lyrics: streams
+                .into_iter()
+                .filter(|s| s.stream_type == LYRIC_STREAM_TYPE)
+                .map(|s| AvailableLyrics {
+                    id: s.id.to_string(),
+                    format: s.format.unwrap_or_default(),
+                })
+                .collect(),
         }
     }
 }

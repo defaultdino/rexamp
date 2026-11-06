@@ -90,6 +90,8 @@ pub const QUEUE_KEYS: &[Action] = &[
     Action::MoveUp,
 ];
 
+pub const MAXIMIZED_PLAYER_KEYS: &[Action] = &[Action::Up, Action::Down];
+
 pub const SEARCH_INPUT_KEYS: &[Action] = &[Action::SearchSubmit, Action::SearchCancel];
 
 pub const HELP_KEYS: &[Action] = &[Action::Help, Action::Quit, Action::Back];
