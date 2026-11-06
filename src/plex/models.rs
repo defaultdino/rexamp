@@ -101,7 +101,7 @@ pub struct TrackLyrics {
 
 #[derive(Debug)]
 pub struct LyricLine {
-    pub offset: usize,
+    pub start_ms: usize,
     pub text: String,
 }
 
@@ -189,6 +189,19 @@ struct RawSpan {
     text: String,
 }
 
+fn to_lyric_line(l: &RawLine, is_timed: bool) -> Option<LyricLine> {
+    let offset = if is_timed {
+        l.start_offset?
+    } else {
+        l.start_offset.unwrap_or(0)
+    };
+    let span = l.span.iter().flatten().next()?;
+    Some(LyricLine {
+        start_ms: offset,
+        text: span.text.clone(),
+    })
+}
+
 impl From<RawLyrics> for TrackLyrics {
     fn from(r: RawLyrics) -> Self {
         Self {
@@ -196,18 +209,7 @@ impl From<RawLyrics> for TrackLyrics {
             lines: r
                 .lines
                 .iter()
-                .filter_map(|l| {
-                    let offset = if r.timed {
-                        l.start_offset?
-                    } else {
-                        l.start_offset.unwrap_or(0)
-                    };
-                    let span = l.span.iter().flatten().next()?;
-                    Some(LyricLine {
-                        offset,
-                        text: span.text.clone(),
-                    })
-                })
+                .filter_map(|l| to_lyric_line(l, r.timed))
                 .collect(),
         }
     }

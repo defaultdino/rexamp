@@ -265,20 +265,17 @@ impl AppState {
                 let len = self.list_len();
                 self.browser.move_selection(delta, len);
             }
-            Screen::Player => match &self.playback.lyrics.lyrics {
-                LoadState::Idle => (),
-                LoadState::Failed => (),
-                LoadState::Loading => (),
-                LoadState::Loaded(l) => {
-                    if !l.timed {
-                        self.playback.lyrics_offset = self
-                            .playback
-                            .lyrics_offset
-                            .saturating_add_signed(delta)
-                            .min(l.lines.len() - 1);
-                    }
+            Screen::Player => {
+                if let LoadState::Loaded(l) = &self.playback.lyrics.lyrics
+                    && !l.timed
+                {
+                    self.playback.lyrics_offset = self
+                        .playback
+                        .lyrics_offset
+                        .saturating_add_signed(delta)
+                        .min(l.lines.len() - 1);
                 }
-            },
+            }
         }
     }
 

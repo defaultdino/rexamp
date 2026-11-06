@@ -69,7 +69,7 @@ pub fn draw_maximized_player(f: &mut Frame, s: &AppState, area: Rect) {
                 Layout::horizontal([Constraint::Length(cols), Constraint::Fill(1)])
                     .spacing(2)
                     .areas(header);
-            if let Some(art) = get_cover_art(s, track) {
+            if let Some(art) = cover_art(s, track) {
                 f.render_widget(CoverArt(art), art_area);
             }
             info
@@ -120,7 +120,7 @@ fn cell_ratio() -> f32 {
 }
 
 /// the loaded cover, if it belongs to the current track
-fn get_cover_art<'a>(s: &'a AppState, track: &Track) -> Option<&'a RgbImage> {
+fn cover_art<'a>(s: &'a AppState, track: &Track) -> Option<&'a RgbImage> {
     s.playback
         .cover
         .as_ref()
@@ -212,11 +212,11 @@ fn lyrics<'a>(s: &'a AppState, line_count: usize) -> Vec<Line<'a>> {
 }
 
 fn timed_lyrics<'a>(s: &AppState, lyrics: &'a TrackLyrics, line_count: usize) -> Vec<Line<'a>> {
-    let current_offset = s.playback.now.position_ms as usize;
+    let pos = s.playback.now.position_ms;
     let active = lyrics
         .lines
         .iter()
-        .rposition(|l| l.offset <= current_offset);
+        .rposition(|l| l.start_ms <= pos as usize);
     let top = active.unwrap_or(0).saturating_sub(LYRICS_OFFSET);
     lyrics
         .lines
@@ -224,12 +224,9 @@ fn timed_lyrics<'a>(s: &AppState, lyrics: &'a TrackLyrics, line_count: usize) ->
         .enumerate()
         .skip(top)
         .take(line_count)
-        .map(|(i, l)| {
-            if Some(i) == active {
-                Line::styled(l.text.as_str(), s.accent)
-            } else {
-                Line::raw(l.text.as_str())
-            }
+        .map(|(i, l)| match Some(i) == active {
+            true => Line::styled(l.text.as_str(), s.accent),
+            false => Line::raw(l.text.as_str()),
         })
         .collect()
 }
