@@ -170,6 +170,7 @@ pub fn run(
         static_cast_devices,
     );
     app.set_accent(accent);
+    app.playback.lyrics_enabled = saved.lyrics_enabled;
 
     spawn_tui(rx, app, media_controls, reports_done, saved)
 }
@@ -226,6 +227,7 @@ fn save_session(state: &mut AppState, saved: &mut SavedState) -> Result<()> {
     let mut out = disk.unwrap_or_else(|| std::mem::take(saved));
     let playback = &state.playback;
     out.volume = playback.now.volume;
+    out.lyrics_enabled = playback.lyrics_enabled;
 
     if same_library {
         out.queue = playback.queue.save(playback.now.position_ms);

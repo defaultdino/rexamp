@@ -173,7 +173,7 @@ impl AppState {
     pub fn on_key(&mut self, k: KeyEvent) {
         if matches!(self.modal, Some(Modal::Search(_))) {
             self.on_search_key(k);
-        } else if let Some(action) = keys::lookup(k) {
+        } else if let Some(action) = keys::lookup(k, &self.get_supported_actions()) {
             self.on_action(action);
         }
     }
@@ -253,6 +253,7 @@ impl AppState {
             }
             // routed through on_search_key while the search modal is open, never via lookup
             Action::SearchSubmit | Action::SearchCancel => {}
+            Action::ToggleLyrics => self.playback.toggle_lyrics(),
             #[cfg(feature = "cast")]
             Action::Cast => self.open_cast_picker(),
         }
@@ -273,7 +274,7 @@ impl AppState {
                         .playback
                         .lyrics_offset
                         .saturating_add_signed(delta)
-                        .min(l.lines.len() - 1);
+                        .min(l.lines.len().saturating_sub(1));
                 }
             }
         }
@@ -360,9 +361,9 @@ impl AppState {
         let Some(Modal::Search(input)) = &mut self.modal else {
             return;
         };
-        match k.code {
-            KeyCode::Esc => self.modal = None,
-            KeyCode::Enter => {
+        match keys::lookup(k, SEARCH_INPUT_KEYS) {
+            Some(Action::SearchCancel) => self.modal = None,
+            Some(Action::SearchSubmit) => {
                 let query = input.trim().to_owned();
                 self.modal = None;
                 if !query.is_empty()
@@ -371,12 +372,14 @@ impl AppState {
                     self.error(e);
                 }
             }
-            KeyCode::Backspace => {
-                input.pop();
-            }
-            KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => input.clear(),
-            KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => input.push(c),
-            _ => {}
+            _ => match k.code {
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => input.clear(),
+                KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => input.push(c),
+                _ => {}
+            },
         }
     }
 }

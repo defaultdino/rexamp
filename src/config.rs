@@ -30,6 +30,7 @@ pub struct SavedState {
     pub server_token: Option<String>,
     pub music_section: Option<String>,
     pub volume: f32,
+    pub lyrics_enabled: bool,
     #[serde(deserialize_with = "queue_or_none")]
     pub queue: Option<SavedQueue>,
 }
@@ -54,6 +55,7 @@ impl Default for SavedState {
             server_token: None,
             music_section: None,
             volume: 0.8,
+            lyrics_enabled: false,
             queue: None,
         }
     }

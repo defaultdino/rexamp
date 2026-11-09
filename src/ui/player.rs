@@ -55,13 +55,18 @@ pub fn draw_maximized_player(f: &mut Frame, s: &AppState, area: Rect) {
         (rows >= 4).then_some((cols, rows))
     };
 
-    let [header, lyrics_area, list] = Layout::vertical([
-        Constraint::Length(cover.map_or(INFO_LINES, |(_, rows)| rows.max(INFO_LINES))),
-        Constraint::Min(6),
-        Constraint::Fill(1),
-    ])
-    .spacing(1)
-    .areas(inner);
+    let header_height =
+        Constraint::Length(cover.map_or(INFO_LINES, |(_, rows)| rows.max(INFO_LINES)));
+    let [header, lyrics_area, list] = if s.playback.lyrics_enabled {
+        Layout::vertical([header_height, Constraint::Min(6), Constraint::Fill(1)])
+            .spacing(1)
+            .areas(inner)
+    } else {
+        let [header, list] = Layout::vertical([header_height, Constraint::Fill(1)])
+            .spacing(1)
+            .areas(inner);
+        [header, Rect::default(), list]
+    };
 
     let info = match cover {
         Some((cols, _)) => {
@@ -81,10 +86,12 @@ pub fn draw_maximized_player(f: &mut Frame, s: &AppState, area: Rect) {
         .flex(Flex::Center)
         .areas(info);
 
-    f.render_widget(
-        Paragraph::new(lyrics(s, lyrics_area.height as usize)),
-        lyrics_area,
-    );
+    if s.playback.lyrics_enabled {
+        f.render_widget(
+            Paragraph::new(lyrics(s, lyrics_area.height as usize)),
+            lyrics_area,
+        );
+    }
     f.render_widget(Paragraph::new(info_lines(s, info.width as usize)), info);
 
     let queue = &s.playback.queue;

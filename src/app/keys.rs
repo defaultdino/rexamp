@@ -2,6 +2,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::browser::Section;
 
+/// ALL app actions. These are divided into
+/// sub-categories in their respective *_KEYS
+/// lists further down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Down,
@@ -37,6 +40,7 @@ pub enum Action {
     TogglePlayer,
     SearchSubmit,
     SearchCancel,
+    ToggleLyrics,
     #[cfg(feature = "cast")]
     Cast,
 }
@@ -90,7 +94,7 @@ pub const QUEUE_KEYS: &[Action] = &[
     Action::MoveUp,
 ];
 
-pub const MAXIMIZED_PLAYER_KEYS: &[Action] = &[Action::Up, Action::Down];
+pub const MAXIMIZED_PLAYER_KEYS: &[Action] = &[Action::Up, Action::Down, Action::ToggleLyrics];
 
 pub const SEARCH_INPUT_KEYS: &[Action] = &[Action::SearchSubmit, Action::SearchCancel];
 
@@ -146,6 +150,7 @@ impl Action {
             Action::TogglePlayer => "toggle player maximized/minimized",
             Action::SearchSubmit => "search",
             Action::SearchCancel => "cancel",
+            Action::ToggleLyrics => "show/hide lyrics",
             #[cfg(feature = "cast")]
             Action::Cast => "cast to a device",
         }
@@ -246,11 +251,13 @@ pub const BINDINGS: &[Binding] = &[
     in_help_bar(bind(Action::SearchSubmit, &[code(KeyCode::Enter)])),
     in_help_bar(bind(Action::SearchCancel, &[code(KeyCode::Esc)])),
     bind(Action::TogglePlayer, &[key('m')]),
+    bind(Action::ToggleLyrics, &[key('L')]),
     #[cfg(feature = "cast")]
     bind(Action::Cast, &[key('c')]),
 ];
 
-pub fn lookup(k: KeyEvent) -> Option<Action> {
+/// only `supported` actions are matched, so one key can mean different things per screen
+pub fn lookup(k: KeyEvent, supported: &[Action]) -> Option<Action> {
     let mut mods = k.modifiers;
     // terminals report shifted characters like `G` or `?` with SHIFT set
     if matches!(k.code, KeyCode::Char(_)) {
@@ -258,6 +265,7 @@ pub fn lookup(k: KeyEvent) -> Option<Action> {
     }
     BINDINGS
         .iter()
+        .filter(|b| supported.contains(&b.action))
         .find(|b| b.keys.iter().any(|kb| kb.code == k.code && kb.mods == mods))
         .map(|b| b.action)
 }
@@ -289,5 +297,18 @@ fn key_label(k: &KeyBinding) -> String {
         format!("Ctrl-{name}")
     } else {
         name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_key_resolves_per_context() {
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(lookup(enter, NAV_KEYS), Some(Action::Open));
+        assert_eq!(lookup(enter, SEARCH_INPUT_KEYS), Some(Action::SearchSubmit));
+        assert_eq!(lookup(enter, GLOBAL_PLAYER_KEYS), None);
     }
 }

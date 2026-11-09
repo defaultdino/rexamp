@@ -48,6 +48,8 @@ pub struct Playback {
     /// status line message, moved to the app's message after each event
     pub(super) notice: Option<Message>,
     pub lyrics_offset: usize,
+    /// off: lyrics are never requested, stored or drawn
+    pub lyrics_enabled: bool,
 }
 
 impl Playback {
@@ -78,6 +80,7 @@ impl Playback {
             notice: None,
             lyrics: Lyrics::default(),
             lyrics_offset: 0,
+            lyrics_enabled: true,
         };
 
         if let Some(saved) = saved {
@@ -553,6 +556,9 @@ impl Playback {
     }
 
     fn sync_available_lyrics(&mut self) {
+        if !self.lyrics_enabled {
+            return;
+        }
         let Some(t) = &self.now.track else { return };
         if self.lyrics.is_available_for(&t.rating_key) {
             return;
@@ -575,6 +581,9 @@ impl Playback {
         rating_key: String,
         result: Result<Vec<AvailableLyrics>, String>,
     ) {
+        if !self.lyrics_enabled {
+            return;
+        }
         match result {
             Ok(available_lyrics) => {
                 self.lyrics.set_available(&rating_key, available_lyrics);
@@ -611,6 +620,9 @@ impl Playback {
     }
 
     pub fn on_lyrics(&mut self, lyrics_id: String, result: Result<TrackLyrics, String>) {
+        if !self.lyrics_enabled {
+            return;
+        }
         match result {
             Ok(lyrics) => self.lyrics.set_lyrics(&lyrics_id, lyrics),
             Err(e) => {
@@ -621,6 +633,12 @@ impl Playback {
                 }
             }
         }
+    }
+
+    pub fn toggle_lyrics(&mut self) {
+        self.lyrics_enabled = !self.lyrics_enabled;
+        self.lyrics = Lyrics::default();
+        self.lyrics_offset = 0;
     }
 
     pub fn sync_track_data(&mut self) {
