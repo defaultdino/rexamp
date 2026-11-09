@@ -11,8 +11,9 @@ use super::queue::{Queue, SavedQueue};
 use super::reporting::{Report, Reporter};
 use super::state::Message;
 use super::{AddMode, ApiRequest, TrackSource};
+use crate::app::lyrics::Lyrics;
 use crate::backend::{DeviceVolume, PlayerCmd, PlayerEvent};
-use crate::plex::models::Track;
+use crate::plex::models::{AvailableLyrics, Track, TrackLyrics};
 
 const ENQUEUE_BEFORE_END_MS: u64 = 10_000;
 const RESTART_AFTER_MS: u64 = 3_000;
@@ -33,6 +34,7 @@ pub struct Playback {
     pub queue: Queue,
     pub now: NowPlaying,
     pub cover: Option<Cover>,
+    pub lyrics: Lyrics,
     loading: Option<(u64, String)>,
     enqueued: Option<(u64, String)>,
     failures: usize,
@@ -45,6 +47,7 @@ pub struct Playback {
     pub media_controls_dirty: bool,
     /// status line message, moved to the app's message after each event
     pub(super) notice: Option<Message>,
+    pub lyrics_offset: usize,
 }
 
 impl Playback {
@@ -73,6 +76,8 @@ impl Playback {
             reporter: Reporter::default(),
             media_controls_dirty: false,
             notice: None,
+            lyrics: Lyrics::default(),
+            lyrics_offset: 0,
         };
 
         if let Some(saved) = saved {
@@ -347,6 +352,7 @@ impl Playback {
                 self.now.position_ms = 0;
                 self.now.buffering = false;
                 self.failures = 0;
+                self.lyrics_offset = 0;
                 if let Some(ms) = self.seek_on_start.take() {
                     self.seek_to(ms);
                 }
@@ -517,7 +523,7 @@ impl Playback {
         self.stop();
     }
 
-    pub fn sync_cover(&mut self) {
+    fn sync_cover(&mut self) {
         let Some(t) = &self.now.track else { return };
         if t.thumb.is_empty() || self.cover.as_ref().is_some_and(|c| c.thumb == t.thumb) {
             return;
@@ -544,5 +550,81 @@ impl Playback {
             }
             Err(e) => warn!("cover art: {e}"),
         }
+    }
+
+    fn sync_available_lyrics(&mut self) {
+        let Some(t) = &self.now.track else { return };
+        if self.lyrics.is_available_for(&t.rating_key) {
+            return;
+        }
+        self.lyrics.set_loading_available(&t.rating_key);
+        if self
+            .api
+            .try_send(ApiRequest::AvailableLyrics {
+                rating_key: t.rating_key.clone(),
+            })
+            .is_err()
+        {
+            warn!("track lyrics request dropped, API queue full");
+            self.lyrics.set_available_failed(&t.rating_key);
+        }
+    }
+
+    pub fn on_available_lyrics(
+        &mut self,
+        rating_key: String,
+        result: Result<Vec<AvailableLyrics>, String>,
+    ) {
+        match result {
+            Ok(available_lyrics) => {
+                self.lyrics.set_available(&rating_key, available_lyrics);
+                let best = self.lyrics.next_lyrics_after(None);
+                if let Some(lyrics_id) = best {
+                    self.fetch_lyrics(lyrics_id);
+                }
+            }
+            Err(e) => {
+                warn!("available_lyrics: {e}");
+                self.lyrics.set_available_failed(&rating_key);
+            }
+        }
+    }
+
+    pub fn fetch_lyrics(&mut self, lyrics_id: String) {
+        if self.now.track.is_none() {
+            return;
+        };
+        if self.lyrics.is_loaded_for(&lyrics_id) {
+            return;
+        }
+        self.lyrics.set_loading_lyrics(&lyrics_id);
+        if self
+            .api
+            .try_send(ApiRequest::Lyrics {
+                lyrics_id: lyrics_id.clone(),
+            })
+            .is_err()
+        {
+            warn!("lyrics request dropped, API queue full");
+            self.lyrics.set_lyrics_failed(&lyrics_id);
+        }
+    }
+
+    pub fn on_lyrics(&mut self, lyrics_id: String, result: Result<TrackLyrics, String>) {
+        match result {
+            Ok(lyrics) => self.lyrics.set_lyrics(&lyrics_id, lyrics),
+            Err(e) => {
+                warn!("lyrics: {e}");
+                match self.lyrics.next_lyrics_after(Some(&lyrics_id)) {
+                    Some(next) => self.fetch_lyrics(next),
+                    None => self.lyrics.set_lyrics_failed(&lyrics_id),
+                }
+            }
+        }
+    }
+
+    pub fn sync_track_data(&mut self) {
+        self.sync_cover();
+        self.sync_available_lyrics();
     }
 }
